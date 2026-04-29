@@ -50,7 +50,7 @@ Or install manually:
 ```bash
 pip install pandas openpyxl matplotlib pillow pypdf pdf2image img2pdf
 ```
-**3
+**3. Docx to pdf**
 ```bash
 pip install docx2pdf
 ```
