@@ -218,7 +218,6 @@ class App(tk.Tk):
             btn.grid(row=0, column=i, padx=(0, 8), sticky="ew")
             grid.columnconfigure(i, weight=1)
             self.mode_btns[key] = btn
-        self._set_mode("sheet2img")
 
         # image format (shown only when output is image)
         self.fmt_frame = tk.Frame(self, bg=BG)
@@ -290,6 +289,9 @@ class App(tk.Tk):
         self.progress = ttk.Progressbar(self, mode="indeterminate",
                                         style="C.Horizontal.TProgressbar")
         self.progress.pack(fill="x", padx=28, pady=(6, 18))
+
+        # initialise mode AFTER all widgets are built
+        self._set_mode("sheet2img")
 
     # ── mode / format helpers ───────────────────────────────
     def _set_mode(self, key):
