@@ -10,6 +10,7 @@ Conversions supported:
 """
 
 import os
+import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
@@ -22,6 +23,22 @@ import matplotlib.pyplot as plt
 
 
 # ═══════════════════════════════════════════════════════════
+#  BUNDLED POPPLER PATH (for PyInstaller .exe)
+# ═══════════════════════════════════════════════════════════
+
+if getattr(sys, 'frozen', False):
+    # running as .exe — use the bundled poppler inside the package
+    BASE_DIR = sys._MEIPASS
+else:
+    # running as .py — look for poppler/ next to this script
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+POPPLER_PATH = os.path.join(BASE_DIR, "poppler")
+if not os.path.isdir(POPPLER_PATH):
+    POPPLER_PATH = None   # fall back to system PATH
+
+
+# ═══════════════════════════════════════════════════════════
 #  CONVERSION FUNCTIONS
 # ═══════════════════════════════════════════════════════════
 
@@ -29,7 +46,7 @@ def spreadsheet_to_image(src, fmt, log):
     ext = Path(src).suffix.lower()
     df  = pd.read_csv(src) if ext == ".csv" else pd.read_excel(src)
     rows, cols = df.shape
-    log(f"Loaded {rows} rows × {cols} columns")
+    log(f"Loaded {rows} rows x {cols} columns")
 
     col_width  = max(1.4, min(2.5, 12 / max(cols, 1)))
     fig_w = max(8,  cols * col_width + 1)
@@ -70,15 +87,20 @@ def pdf_to_images(src, fmt, log):
     try:
         from pdf2image import convert_from_path
     except ImportError:
-        raise RuntimeError("pdf2image not installed. Run: pip install pdf2image\nAlso install poppler: https://poppler.freedesktop.org")
+        raise RuntimeError("pdf2image not installed. Run: pip install pdf2image")
 
-    log("Converting PDF pages to images…")
-    images = convert_from_path(src, dpi=150)
+    log("Converting PDF pages to images...")
+    kwargs = {"dpi": 150}
+    if POPPLER_PATH:
+        kwargs["poppler_path"] = POPPLER_PATH
+
+    images = convert_from_path(src, **kwargs)
     log(f"Found {len(images)} page(s)")
+
     out_dir = Path(src).parent
     stem    = Path(src).stem
     pil_fmt = "JPEG" if fmt in ("jpg", "jpeg") else "PNG"
-    ext     = "jpg" if fmt in ("jpg", "jpeg") else "png"
+    ext     = "jpg"  if fmt in ("jpg", "jpeg") else "png"
     saved   = []
     for i, img in enumerate(images, 1):
         out = str(out_dir / f"{stem}_page{i}.{ext}")
@@ -96,7 +118,7 @@ def images_to_pdf(src_list, log):
 
     from PIL import Image
 
-    log(f"Merging {len(src_list)} image(s) into PDF…")
+    log(f"Merging {len(src_list)} image(s) into PDF...")
     converted = []
     tmp_files = []
     for p in src_list:
@@ -120,7 +142,7 @@ def images_to_pdf(src_list, log):
 
 
 def docx_to_pdf(src, log):
-    log("Converting DOCX to PDF…")
+    log("Converting DOCX to PDF...")
     import subprocess, shutil
 
     out = str(Path(src).with_suffix(".pdf"))
@@ -146,10 +168,9 @@ def docx_to_pdf(src, log):
         pass
 
     raise RuntimeError(
-        "No converter found.\n"
-        "Install one of:\n"
-        "  • LibreOffice (free): https://www.libreoffice.org\n"
-        "  • pip install docx2pdf  (Windows/Mac with Word installed)"
+        "No DOCX converter found.\n"
+        "Install LibreOffice: https://www.libreoffice.org\n"
+        "Or run: pip install docx2pdf  (needs Microsoft Word)"
     )
 
 
@@ -158,20 +179,20 @@ def docx_to_pdf(src, log):
 # ═══════════════════════════════════════════════════════════
 
 MODES = [
-    ("CSV / XLSX  →  Image",   "sheet2img"),
-    ("PDF  →  Images",         "pdf2img"),
-    ("Images  →  PDF",         "img2pdf"),
-    ("DOCX  →  PDF",           "docx2pdf"),
+    ("CSV / XLSX  ->  Image",  "sheet2img"),
+    ("PDF  ->  Images",        "pdf2img"),
+    ("Images  ->  PDF",        "img2pdf"),
+    ("DOCX  ->  PDF",          "docx2pdf"),
 ]
 
 IMG_FMTS = ["PNG", "JPG", "JPEG"]
 
-BG      = "#F8F9FB"
-DARK    = "#2E4057"
-GRAY    = "#6B7280"
-BORDER  = "#E5E7EB"
-GREEN   = "#16A34A"
-RED     = "#DC2626"
+BG     = "#F8F9FB"
+DARK   = "#2E4057"
+GRAY   = "#6B7280"
+BORDER = "#E5E7EB"
+GREEN  = "#16A34A"
+RED    = "#DC2626"
 
 
 class App(tk.Tk):
@@ -195,15 +216,12 @@ class App(tk.Tk):
         y = (self.winfo_screenheight() - h) // 2
         self.geometry(f"{w}x{h}+{x}+{y}")
 
-    # ── layout ─────────────────────────────────────────────
     def _build(self):
-        # title
         tk.Label(self, text="File Converter", font=("Helvetica", 18, "bold"),
                  bg=BG, fg="#1A1A2E").pack(pady=(26, 4))
         tk.Label(self, text="Choose a conversion, pick your files, and go",
                  font=("Helvetica", 10), bg=BG, fg=GRAY).pack(pady=(0, 18))
 
-        # mode buttons
         tk.Label(self, text="Conversion type", font=("Helvetica", 10, "bold"),
                  bg=BG, fg="#374151", anchor="w").pack(fill="x", padx=28)
 
@@ -219,7 +237,6 @@ class App(tk.Tk):
             grid.columnconfigure(i, weight=1)
             self.mode_btns[key] = btn
 
-        # image format (shown only when output is image)
         self.fmt_frame = tk.Frame(self, bg=BG)
         self.fmt_frame.pack(fill="x", padx=28, pady=(0, 14))
         tk.Label(self.fmt_frame, text="Output format",
@@ -236,7 +253,6 @@ class App(tk.Tk):
             self.fmt_btns[fmt] = b
         self._set_fmt("PNG")
 
-        # file list
         tk.Frame(self, height=1, bg=BORDER).pack(fill="x", padx=28, pady=(0, 14))
         hdr = tk.Frame(self, bg=BG)
         hdr.pack(fill="x", padx=28)
@@ -265,7 +281,6 @@ class App(tk.Tk):
         self.listbox.pack(side="left", fill="both", expand=True)
         sb.config(command=self.listbox.yview)
 
-        # convert button
         tk.Frame(self, height=1, bg=BORDER).pack(fill="x", padx=28, pady=(14, 0))
         self.convert_btn = tk.Button(self, text="Convert",
                                      font=("Helvetica", 11, "bold"),
@@ -276,13 +291,13 @@ class App(tk.Tk):
                                      command=self._start)
         self.convert_btn.pack(fill="x", padx=28, pady=(14, 0))
 
-        # status + progress
         self.status_lbl = tk.Label(self, textvariable=self.status_sv,
                                    font=("Helvetica", 9), bg=BG, fg=GRAY,
                                    wraplength=500, justify="center")
         self.status_lbl.pack(pady=(10, 0))
 
-        style = ttk.Style(); style.theme_use("default")
+        style = ttk.Style()
+        style.theme_use("default")
         style.configure("C.Horizontal.TProgressbar",
                         troughcolor=BORDER, background=DARK,
                         thickness=3, borderwidth=0)
@@ -293,7 +308,6 @@ class App(tk.Tk):
         # initialise mode AFTER all widgets are built
         self._set_mode("sheet2img")
 
-    # ── mode / format helpers ───────────────────────────────
     def _set_mode(self, key):
         self.mode.set(key)
         self.files.clear()
@@ -302,7 +316,6 @@ class App(tk.Tk):
         for k, b in self.mode_btns.items():
             b.config(bg=DARK if k == key else BORDER,
                      fg="#FFFFFF" if k == key else "#374151")
-        # show/hide image format selector
         needs_fmt = key in ("sheet2img", "pdf2img")
         if needs_fmt:
             self.fmt_frame.pack(fill="x", padx=28, pady=(0, 14),
@@ -316,7 +329,6 @@ class App(tk.Tk):
             b.config(bg=DARK if f == fmt else BORDER,
                      fg="#FFFFFF" if f == fmt else "#374151")
 
-    # ── file browse ─────────────────────────────────────────
     def _browse(self):
         mode = self.mode.get()
         if mode == "sheet2img":
@@ -350,7 +362,6 @@ class App(tk.Tk):
         self.listbox.delete(0, tk.END)
         self.status_sv.set("")
 
-    # ── conversion ──────────────────────────────────────────
     def _log(self, msg):
         self.after(0, lambda: self.status_sv.set(msg))
 
@@ -360,7 +371,7 @@ class App(tk.Tk):
             return
         self.convert_btn.config(state="disabled")
         self.progress.start(10)
-        self.status_sv.set("Working…")
+        self.status_sv.set("Working...")
         self.status_lbl.config(fg=GRAY)
         threading.Thread(target=self._run, daemon=True).start()
 
@@ -387,7 +398,7 @@ class App(tk.Tk):
         self.progress.stop()
         self.convert_btn.config(state="normal")
         if ok:
-            self.status_sv.set("✓ Done! Files saved in the same folder as input.")
+            self.status_sv.set("Done! Files saved in the same folder as input.")
             self.status_lbl.config(fg=GREEN)
         else:
             self.status_sv.set(f"Error: {err}")
