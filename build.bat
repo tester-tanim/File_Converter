@@ -20,7 +20,18 @@ echo.
 
 :: ── Step 2: Install Python dependencies ───────
 echo [2/6] Installing Python dependencies...
-pip install pyinstaller pandas openpyxl matplotlib pillow pypdf pdf2image img2pdf --quiet
+pip install ^
+    pyinstaller ^
+    pandas ^
+    openpyxl ^
+    matplotlib ^
+    pillow ^
+    pypdf ^
+    pdf2image ^
+    img2pdf ^
+    python-docx ^
+    reportlab ^
+    --quiet
 if errorlevel 1 (
     echo ERROR: Failed to install dependencies.
     pause
@@ -67,13 +78,13 @@ echo.
 
 :: ── Step 4: Clean old build ───────────────────
 echo [4/6] Cleaning old build files...
-if exist "dist" rmdir /s /q dist
-if exist "build" rmdir /s /q build
+if exist "dist"              rmdir /s /q dist
+if exist "build"             rmdir /s /q build
 if exist "FileConverter.spec" del /q FileConverter.spec
 echo       OK
 echo.
 
-:: ── Step 5: Build EXE ────────────────────────
+:: ── Step 5: Build EXE ─────────────────────────
 echo [5/6] Building EXE (this may take 1-3 minutes)...
 echo.
 
@@ -84,10 +95,23 @@ if exist "poppler" (
         --hidden-import pandas ^
         --hidden-import openpyxl ^
         --hidden-import matplotlib ^
+        --hidden-import matplotlib.backends.backend_agg ^
         --hidden-import PIL ^
+        --hidden-import PIL.Image ^
+        --hidden-import PIL.ImageOps ^
         --hidden-import pdf2image ^
         --hidden-import img2pdf ^
         --hidden-import pypdf ^
+        --hidden-import docx ^
+        --hidden-import reportlab ^
+        --hidden-import reportlab.platypus ^
+        --hidden-import reportlab.lib.styles ^
+        --hidden-import reportlab.lib.pagesizes ^
+        --hidden-import reportlab.lib.units ^
+        --hidden-import reportlab.lib.colors ^
+        --hidden-import reportlab.lib.enums ^
+        --collect-submodules reportlab ^
+        --collect-submodules docx ^
         file_converter.py
 ) else (
     pyinstaller --onefile --windowed ^
@@ -95,10 +119,23 @@ if exist "poppler" (
         --hidden-import pandas ^
         --hidden-import openpyxl ^
         --hidden-import matplotlib ^
+        --hidden-import matplotlib.backends.backend_agg ^
         --hidden-import PIL ^
+        --hidden-import PIL.Image ^
+        --hidden-import PIL.ImageOps ^
         --hidden-import pdf2image ^
         --hidden-import img2pdf ^
         --hidden-import pypdf ^
+        --hidden-import docx ^
+        --hidden-import reportlab ^
+        --hidden-import reportlab.platypus ^
+        --hidden-import reportlab.lib.styles ^
+        --hidden-import reportlab.lib.pagesizes ^
+        --hidden-import reportlab.lib.units ^
+        --hidden-import reportlab.lib.colors ^
+        --hidden-import reportlab.lib.enums ^
+        --collect-submodules reportlab ^
+        --collect-submodules docx ^
         file_converter.py
 )
 

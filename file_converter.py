@@ -43,42 +43,70 @@ if not os.path.isdir(POPPLER_PATH):
 # ═══════════════════════════════════════════════════════════
 
 def spreadsheet_to_image(src, fmt, log):
+    from PIL import Image, ImageOps
+    import io
+
     ext = Path(src).suffix.lower()
     df  = pd.read_csv(src) if ext == ".csv" else pd.read_excel(src)
     rows, cols = df.shape
     log(f"Loaded {rows} rows x {cols} columns")
 
-    col_width  = max(1.4, min(2.5, 12 / max(cols, 1)))
+    col_width = max(1.4, min(2.5, 12 / max(cols, 1)))
     fig_w = max(8,  cols * col_width + 1)
-    fig_h = max(3, (rows + 1) * 0.45 + 1.2)
+    fig_h = max(2, (rows + 1) * 0.38)   # tighter height, no title padding
 
     fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)  # zero margins
     ax.axis("off")
 
     row_fill = [["#F7F9FC" if i % 2 == 0 else "#FFFFFF"] * cols for i in range(rows)]
     tbl = ax.table(
         cellText    = df.astype(str).values.tolist(),
         colLabels   = df.columns.tolist(),
-        cellLoc     = "center", loc="center",
+        cellLoc     = "center",
+        loc         = "center",
         cellColours = row_fill,
         colColours  = ["#2E4057"] * cols,
     )
     tbl.auto_set_font_size(False)
-    tbl.set_fontsize(max(7, min(11, int(120 / max(cols, rows, 1)))))
+    font_size = max(7, min(11, int(120 / max(cols, rows, 1))))
+    tbl.set_fontsize(font_size)
     tbl.auto_set_column_width(col=list(range(cols)))
+
+    # scale table to fill the axes exactly
+    tbl.scale(1, 1.4)
+
     for (r, c), cell in tbl.get_celld().items():
-        cell.set_edgecolor("#D0D7E3"); cell.set_linewidth(0.6)
+        cell.set_edgecolor("#D0D7E3")
+        cell.set_linewidth(0.6)
         cell.get_text().set_color("#FFFFFF" if r == 0 else "#2C2C2C")
-        if r == 0: cell.get_text().set_fontweight("bold")
+        if r == 0:
+            cell.get_text().set_fontweight("bold")
 
-    title = Path(src).stem.replace("_", " ").title()
-    fig.suptitle(title, fontsize=13, fontweight="bold", color="#2E4057", y=0.97)
-    fig.tight_layout(pad=0.5)
-
-    save_fmt = "jpeg" if fmt == "jpg" else fmt
-    out = str(Path(src).with_suffix(f".{fmt}"))
-    fig.savefig(out, format=save_fmt, dpi=150, bbox_inches="tight", facecolor="white")
+    # save to an in-memory buffer first
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, facecolor="white",
+                bbox_inches="tight", pad_inches=0)
     plt.close(fig)
+
+    # crop any remaining whitespace with Pillow
+    buf.seek(0)
+    img = Image.open(buf).convert("RGB")
+    # invert to find non-white pixels and get bounding box
+    inverted = ImageOps.invert(img)
+    bbox = inverted.getbbox()          # (left, top, right, bottom)
+    if bbox:
+        padding = 6                    # small padding around table in pixels
+        left   = max(0,          bbox[0] - padding)
+        top    = max(0,          bbox[1] - padding)
+        right  = min(img.width,  bbox[2] + padding)
+        bottom = min(img.height, bbox[3] + padding)
+        img = img.crop((left, top, right, bottom))
+
+    save_fmt = "jpeg" if fmt in ("jpg", "jpeg") else "png"
+    out = str(Path(src).with_suffix(f".{fmt}"))
+    img.save(out, save_fmt.upper(), dpi=(150, 150))
+
     log(f"Saved: {out}")
     return [out]
 
@@ -119,24 +147,50 @@ def images_to_pdf(src_list, log):
     from PIL import Image
 
     log(f"Merging {len(src_list)} image(s) into PDF...")
-    converted = []
     tmp_files = []
+    converted = []
+
     for p in src_list:
-        img = Image.open(p)
-        if img.mode in ("RGBA", "P", "LA"):
-            rgb = img.convert("RGB")
-            tmp = p + "__tmp.jpg"
-            rgb.save(tmp, "JPEG")
-            tmp_files.append(tmp)
-            converted.append(tmp)
+        try:
+            img = Image.open(p)
+            img.load()
+        except Exception as e:
+            raise RuntimeError(f"Cannot open image: {Path(p).name}\n{e}")
+
+        if img.mode in ("RGBA", "PA", "LA", "P"):
+            img = img.convert("RGBA")
+            tmp = p + "__tmp.png"
+            img.save(tmp, "PNG")
         else:
-            converted.append(p)
+            img = img.convert("RGB")
+            tmp = p + "__tmp.jpg"
+            img.save(tmp, "JPEG", quality=95)
+
+        tmp_files.append(tmp)
+        converted.append(tmp)
+        log(f"Prepared: {Path(p).name}")
+
+    if not converted:
+        raise RuntimeError("No valid images to convert.")
 
     out = str(Path(src_list[0]).parent / "images_merged.pdf")
+    pdf_bytes = img2pdf.convert(converted)
+
+    if pdf_bytes is None:
+        raise RuntimeError(
+            "img2pdf returned no data. "
+            "Try converting your images to JPG first and try again."
+        )
+
     with open(out, "wb") as f:
-        f.write(img2pdf.convert(converted))
+        f.write(pdf_bytes)
+
     for t in tmp_files:
-        os.remove(t)
+        try:
+            os.remove(t)
+        except Exception:
+            pass
+
     log(f"Saved: {out}")
     return [out]
 
@@ -147,31 +201,180 @@ def docx_to_pdf(src, log):
 
     out = str(Path(src).with_suffix(".pdf"))
 
-    if shutil.which("libreoffice") or shutil.which("soffice"):
-        cmd = shutil.which("libreoffice") or shutil.which("soffice")
+    # ── Method 1: LibreOffice (best quality) ──────────────────
+    lo = shutil.which("libreoffice") or shutil.which("soffice")
+    if lo:
+        log("Using LibreOffice...")
         result = subprocess.run(
-            [cmd, "--headless", "--convert-to", "pdf", "--outdir",
-             str(Path(src).parent), src],
+            [lo, "--headless", "--convert-to", "pdf",
+             "--outdir", str(Path(src).parent), src],
             capture_output=True, text=True
         )
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr or "LibreOffice conversion failed")
-        log(f"Saved: {out}")
-        return [out]
+        if result.returncode == 0:
+            log(f"Saved: {out}")
+            return [out]
 
+    # ── Method 2: docx2pdf (Windows/Mac with Word) ────────────
     try:
-        from docx2pdf import convert
-        convert(src, out)
-        log(f"Saved: {out}")
-        return [out]
-    except ImportError:
+        from docx2pdf import convert as d2p_convert
+        log("Using docx2pdf...")
+        d2p_convert(src, out)
+        if os.path.exists(out):
+            log(f"Saved: {out}")
+            return [out]
+    except Exception:
         pass
 
-    raise RuntimeError(
-        "No DOCX converter found.\n"
-        "Install LibreOffice: https://www.libreoffice.org\n"
-        "Or run: pip install docx2pdf  (needs Microsoft Word)"
+    # ── Method 3: Pure Python fallback (python-docx + reportlab) ──
+    try:
+        log("Using built-in converter...")
+        _docx_to_pdf_pure(src, out, log)
+        log(f"Saved: {out}")
+        return [out]
+    except Exception as e:
+        raise RuntimeError(
+            f"Conversion failed: {e}\n\n"
+            "For best results install LibreOffice (free):\n"
+            "https://www.libreoffice.org"
+        )
+
+
+def _docx_to_pdf_pure(src, out, log):
+    """Pure Python DOCX → PDF using python-docx + reportlab."""
+    from docx import Document
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.lib import colors
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
     )
+    from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
+
+    doc  = Document(src)
+    pdf  = SimpleDocTemplate(
+        out,
+        pagesize=A4,
+        leftMargin=2.5*cm, rightMargin=2.5*cm,
+        topMargin=2.5*cm,  bottomMargin=2.5*cm,
+    )
+
+    base_styles = getSampleStyleSheet()
+
+    def make_style(name, parent="Normal", **kw):
+        s = ParagraphStyle(name, parent=base_styles[parent], **kw)
+        return s
+
+    h1 = make_style("H1", "Heading1", fontSize=18, spaceAfter=10, spaceBefore=14, textColor=colors.HexColor("#1a1a2e"))
+    h2 = make_style("H2", "Heading2", fontSize=14, spaceAfter=8,  spaceBefore=12, textColor=colors.HexColor("#2e4057"))
+    h3 = make_style("H3", "Heading3", fontSize=12, spaceAfter=6,  spaceBefore=10, textColor=colors.HexColor("#374151"))
+    normal = make_style("Body", fontSize=10, leading=15, spaceAfter=6,
+                        alignment=TA_JUSTIFY)
+    bullet_style = make_style("Bullet", fontSize=10, leading=15,
+                              leftIndent=18, spaceAfter=4,
+                              bulletIndent=6)
+
+    align_map = {
+        "LEFT": TA_LEFT, "CENTER": TA_CENTER,
+        "RIGHT": TA_RIGHT, "JUSTIFY": TA_JUSTIFY,
+    }
+
+    def para_style(p):
+        name = p.style.name or ""
+        if "Heading 1" in name: return h1
+        if "Heading 2" in name: return h2
+        if "Heading 3" in name: return h3
+        if "List"      in name: return bullet_style
+        align = str(p.alignment).upper() if p.alignment else "LEFT"
+        st = ParagraphStyle(
+            f"auto_{id(p)}", parent=normal,
+            alignment=align_map.get(align, TA_LEFT)
+        )
+        return st
+
+    def runs_to_html(p):
+        parts = []
+        for run in p.runs:
+            txt = run.text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            if not txt:
+                continue
+            if run.bold:   txt = f"<b>{txt}</b>"
+            if run.italic: txt = f"<i>{txt}</i>"
+            if run.underline: txt = f"<u>{txt}</u>"
+            parts.append(txt)
+        return "".join(parts)
+
+    story = []
+    total = len(doc.paragraphs) + len(doc.tables)
+    done  = 0
+
+    def process_paragraph(p):
+        html = runs_to_html(p)
+        if not html.strip():
+            return Spacer(1, 6)
+        name = p.style.name or ""
+        prefix = "• " if "List" in name else ""
+        return Paragraph(prefix + html, para_style(p))
+
+    def process_table(tbl):
+        data = []
+        for row in tbl.rows:
+            data.append([cell.text.strip() for cell in row.cells])
+        if not data:
+            return None
+        col_count = max(len(r) for r in data)
+        col_w = (A4[0] - 5*cm) / col_count
+
+        ts = TableStyle([
+            ("BACKGROUND",  (0,0), (-1,0),  colors.HexColor("#2E4057")),
+            ("TEXTCOLOR",   (0,0), (-1,0),  colors.white),
+            ("FONTNAME",    (0,0), (-1,0),  "Helvetica-Bold"),
+            ("FONTSIZE",    (0,0), (-1,-1), 9),
+            ("ROWBACKGROUNDS", (0,1), (-1,-1),
+             [colors.HexColor("#F7F9FC"), colors.white]),
+            ("GRID",        (0,0), (-1,-1), 0.4, colors.HexColor("#D0D7E3")),
+            ("VALIGN",      (0,0), (-1,-1), "MIDDLE"),
+            ("LEFTPADDING", (0,0), (-1,-1), 6),
+            ("RIGHTPADDING",(0,0), (-1,-1), 6),
+            ("TOPPADDING",  (0,0), (-1,-1), 4),
+            ("BOTTOMPADDING",(0,0),(-1,-1), 4),
+        ])
+        t = Table(data, colWidths=[col_w]*col_count, repeatRows=1)
+        t.setStyle(ts)
+        return t
+
+    # interleave paragraphs and tables in document order
+    block_items = list(_iter_block_items(doc))
+    for i, item in enumerate(block_items):
+        from docx.text.paragraph import Paragraph as DocxPara
+        from docx.table import Table as DocxTable
+        if isinstance(item, DocxPara):
+            el = process_paragraph(item)
+        else:
+            el = process_table(item)
+        if el is not None:
+            story.append(el)
+        if i % 20 == 0:
+            log(f"Processing... ({i+1}/{len(block_items)})")
+
+    if not story:
+        story.append(Paragraph("(empty document)", normal))
+
+    pdf.build(story)
+
+
+def _iter_block_items(doc):
+    """Yield paragraphs and tables in document order."""
+    from docx.oxml.ns import qn
+    from docx.text.paragraph import Paragraph as DocxPara
+    from docx.table import Table as DocxTable
+
+    parent = doc.element.body
+    for child in parent.iterchildren():
+        if child.tag == qn("w:p"):
+            yield DocxPara(child, doc)
+        elif child.tag == qn("w:tbl"):
+            yield DocxTable(child, doc)
 
 
 # ═══════════════════════════════════════════════════════════
