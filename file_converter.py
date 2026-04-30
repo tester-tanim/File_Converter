@@ -195,29 +195,61 @@ def images_to_pdf(src_list, log):
     return [out]
 
 
+def _find_libreoffice():
+    """Find LibreOffice executable across Windows, Mac and Linux."""
+    import shutil, glob
+
+    # check PATH first (works on Mac/Linux if properly installed)
+    for cmd in ("libreoffice", "soffice"):
+        path = shutil.which(cmd)
+        if path:
+            return path
+
+    # common Windows install locations
+    win_patterns = [
+        r"C:\Program Files\LibreOffice\program\soffice.exe",
+        r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+        r"C:\Program Files\LibreOffice*\program\soffice.exe",
+        r"C:\Program Files (x86)\LibreOffice*\program\soffice.exe",
+    ]
+    for pattern in win_patterns:
+        matches = glob.glob(pattern)
+        if matches:
+            return matches[0]
+
+    # common Mac install location
+    mac_path = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
+    if os.path.exists(mac_path):
+        return mac_path
+
+    return None
+
+
 def docx_to_pdf(src, log):
     log("Converting DOCX to PDF...")
-    import subprocess, shutil
+    import subprocess
 
     out = str(Path(src).with_suffix(".pdf"))
 
     # ── Method 1: LibreOffice (best quality) ──────────────────
-    lo = shutil.which("libreoffice") or shutil.which("soffice")
+    lo = _find_libreoffice()
     if lo:
-        log("Using LibreOffice...")
+        log(f"Using LibreOffice...")
         result = subprocess.run(
             [lo, "--headless", "--convert-to", "pdf",
              "--outdir", str(Path(src).parent), src],
             capture_output=True, text=True
         )
-        if result.returncode == 0:
+        if result.returncode == 0 and os.path.exists(out):
             log(f"Saved: {out}")
             return [out]
+        else:
+            log(f"LibreOffice error: {result.stderr.strip() or result.stdout.strip()}")
 
-    # ── Method 2: docx2pdf (Windows/Mac with Word) ────────────
+    # ── Method 2: docx2pdf (Windows/Mac with Word installed) ──
     try:
         from docx2pdf import convert as d2p_convert
-        log("Using docx2pdf...")
+        log("Using docx2pdf (Microsoft Word)...")
         d2p_convert(src, out)
         if os.path.exists(out):
             log(f"Saved: {out}")
@@ -225,136 +257,280 @@ def docx_to_pdf(src, log):
     except Exception:
         pass
 
-    # ── Method 3: Pure Python fallback (python-docx + reportlab) ──
+    # ── Method 3: Pure Python fallback ────────────────────────
     try:
-        log("Using built-in converter...")
+        log("Using built-in converter (install LibreOffice for best results)...")
         _docx_to_pdf_pure(src, out, log)
         log(f"Saved: {out}")
         return [out]
     except Exception as e:
         raise RuntimeError(
             f"Conversion failed: {e}\n\n"
-            "For best results install LibreOffice (free):\n"
-            "https://www.libreoffice.org"
+            "Please install LibreOffice for best results:\n"
+            "https://www.libreoffice.org/download/download-libreoffice"
         )
 
 
 def _docx_to_pdf_pure(src, out, log):
-    """Pure Python DOCX → PDF using python-docx + reportlab."""
+    """Pure Python DOCX → PDF — faithful reproduction using python-docx + reportlab."""
     from docx import Document
+    from docx.oxml.ns import qn
+    from docx.shared import Pt, RGBColor
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import cm
+    from reportlab.lib.units import cm, pt
     from reportlab.lib import colors
     from reportlab.platypus import (
         SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
     )
     from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
 
-    doc  = Document(src)
-    pdf  = SimpleDocTemplate(
-        out,
-        pagesize=A4,
-        leftMargin=2.5*cm, rightMargin=2.5*cm,
-        topMargin=2.5*cm,  bottomMargin=2.5*cm,
+    PAGE_W, PAGE_H = A4
+    L_MARGIN = R_MARGIN = 2.5 * cm
+    USABLE_W = PAGE_W - L_MARGIN - R_MARGIN
+
+    doc = Document(src)
+    pdf = SimpleDocTemplate(
+        out, pagesize=A4,
+        leftMargin=L_MARGIN, rightMargin=R_MARGIN,
+        topMargin=2.5*cm, bottomMargin=2.5*cm,
     )
 
     base_styles = getSampleStyleSheet()
 
     def make_style(name, parent="Normal", **kw):
-        s = ParagraphStyle(name, parent=base_styles[parent], **kw)
-        return s
+        return ParagraphStyle(name, parent=base_styles[parent], **kw)
 
-    h1 = make_style("H1", "Heading1", fontSize=18, spaceAfter=10, spaceBefore=14, textColor=colors.HexColor("#1a1a2e"))
-    h2 = make_style("H2", "Heading2", fontSize=14, spaceAfter=8,  spaceBefore=12, textColor=colors.HexColor("#2e4057"))
-    h3 = make_style("H3", "Heading3", fontSize=12, spaceAfter=6,  spaceBefore=10, textColor=colors.HexColor("#374151"))
-    normal = make_style("Body", fontSize=10, leading=15, spaceAfter=6,
-                        alignment=TA_JUSTIFY)
-    bullet_style = make_style("Bullet", fontSize=10, leading=15,
-                              leftIndent=18, spaceAfter=4,
-                              bulletIndent=6)
+    h1 = make_style("H1", "Heading1", fontSize=16, spaceAfter=8,  spaceBefore=12, textColor=colors.HexColor("#1a1a2e"))
+    h2 = make_style("H2", "Heading2", fontSize=13, spaceAfter=6,  spaceBefore=10, textColor=colors.HexColor("#2e4057"))
+    h3 = make_style("H3", "Heading3", fontSize=11, spaceAfter=4,  spaceBefore=8,  textColor=colors.HexColor("#374151"))
+    normal      = make_style("Body",   fontSize=10, leading=14, spaceAfter=4)
+    bold_normal = make_style("BodyB",  fontSize=10, leading=14, spaceAfter=4, fontName="Helvetica-Bold")
+    bullet_st   = make_style("Bullet", fontSize=10, leading=14, spaceAfter=3, leftIndent=18, bulletIndent=6)
 
-    align_map = {
-        "LEFT": TA_LEFT, "CENTER": TA_CENTER,
-        "RIGHT": TA_RIGHT, "JUSTIFY": TA_JUSTIFY,
-    }
+    align_map = {"LEFT": TA_LEFT, "CENTER": TA_CENTER, "RIGHT": TA_RIGHT, "JUSTIFY": TA_JUSTIFY}
 
-    def para_style(p):
-        name = p.style.name or ""
-        if "Heading 1" in name: return h1
-        if "Heading 2" in name: return h2
-        if "Heading 3" in name: return h3
-        if "List"      in name: return bullet_style
-        align = str(p.alignment).upper() if p.alignment else "LEFT"
-        st = ParagraphStyle(
-            f"auto_{id(p)}", parent=normal,
-            alignment=align_map.get(align, TA_LEFT)
-        )
-        return st
+    # ── helpers ────────────────────────────────────────────────────────────
 
-    def runs_to_html(p):
+    def escape(t):
+        return t.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+
+    def runs_to_html(para):
+        """Convert paragraph runs to HTML-like string respecting bold/italic/underline/color."""
         parts = []
-        for run in p.runs:
-            txt = run.text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        for run in para.runs:
+            txt = escape(run.text)
             if not txt:
                 continue
-            if run.bold:   txt = f"<b>{txt}</b>"
-            if run.italic: txt = f"<i>{txt}</i>"
-            if run.underline: txt = f"<u>{txt}</u>"
+            # detect bold: explicit run bold OR style bold
+            is_bold = run.bold or (run.style and run.style.font.bold)
+            is_italic = run.italic or (run.style and run.style.font.italic)
+            is_under  = run.underline
+
+            # font color
+            try:
+                rgb = run.font.color.rgb
+                txt = f'<font color="#{rgb}">{txt}</font>'
+            except Exception:
+                pass
+
+            if is_bold:    txt = f"<b>{txt}</b>"
+            if is_italic:  txt = f"<i>{txt}</i>"
+            if is_under:   txt = f"<u>{txt}</u>"
             parts.append(txt)
         return "".join(parts)
 
-    story = []
-    total = len(doc.paragraphs) + len(doc.tables)
-    done  = 0
+    def para_is_bold(p):
+        """True if the whole paragraph is effectively bold."""
+        if p.runs and all(r.bold for r in p.runs if r.text.strip()):
+            return True
+        try:
+            return p.style.font.bold
+        except Exception:
+            return False
+
+    def get_para_style(p):
+        name = (p.style.name or "").strip()
+        if name.startswith("Heading 1") or name == "Title": return h1
+        if name.startswith("Heading 2"):                    return h2
+        if name.startswith("Heading 3"):                    return h3
+        if "List"  in name:                                 return bullet_st
+        align_raw = str(p.alignment).upper() if p.alignment else "LEFT"
+        align     = align_map.get(align_raw, TA_LEFT)
+        if para_is_bold(p):
+            return make_style(f"bb_{id(p)}", "Normal",
+                              fontSize=10, leading=14, spaceAfter=4,
+                              fontName="Helvetica-Bold", alignment=align)
+        return make_style(f"np_{id(p)}", "Normal",
+                          fontSize=10, leading=14, spaceAfter=4, alignment=align)
 
     def process_paragraph(p):
         html = runs_to_html(p)
+        name = (p.style.name or "").strip()
         if not html.strip():
-            return Spacer(1, 6)
-        name = p.style.name or ""
+            return Spacer(1, 4)
         prefix = "• " if "List" in name else ""
-        return Paragraph(prefix + html, para_style(p))
+        return Paragraph(prefix + html, get_para_style(p))
+
+    # ── table processing ───────────────────────────────────────────────────
+
+    def cell_runs_to_html(cell):
+        parts = []
+        for p in cell.paragraphs:
+            parts.append(runs_to_html(p))
+        return "<br/>".join(p for p in parts if p)
+
+    def cell_is_bold(cell):
+        for p in cell.paragraphs:
+            if para_is_bold(p):
+                return True
+            for run in p.runs:
+                if run.bold:
+                    return True
+        return False
+
+    def get_col_widths(tbl):
+        """Try to read real column widths from the XML; fall back to equal split."""
+        try:
+            tbl_w_el = tbl._tbl.find(qn("w:tblPr"), tbl._tbl.nsmap)
+            grid = tbl._tbl.findall(qn("w:tblGrid") + "/" + qn("w:gridCol"),
+                                    tbl._tbl.nsmap)
+            if not grid:
+                grid = tbl._tbl.find(qn("w:tblGrid"), tbl._tbl.nsmap)
+                if grid is not None:
+                    grid = grid.findall(qn("w:gridCol"))
+            if grid:
+                twips = [int(g.get(qn("w:w"), 0)) for g in grid]
+                total = sum(twips) or 1
+                return [USABLE_W * (w / total) for w in twips]
+        except Exception:
+            pass
+        n = len(tbl.columns)
+        return [USABLE_W / n] * n
 
     def process_table(tbl):
-        data = []
-        for row in tbl.rows:
-            data.append([cell.text.strip() for cell in row.cells])
+        col_widths = get_col_widths(tbl)
+        n_cols     = len(col_widths)
+
+        # build cell data as Paragraphs + collect span commands
+        data       = []
+        style_cmds = [
+            ("GRID",         (0,0), (-1,-1), 0.5, colors.HexColor("#AAAAAA")),
+            ("VALIGN",       (0,0), (-1,-1), "MIDDLE"),
+            ("LEFTPADDING",  (0,0), (-1,-1), 5),
+            ("RIGHTPADDING", (0,0), (-1,-1), 5),
+            ("TOPPADDING",   (0,0), (-1,-1), 4),
+            ("BOTTOMPADDING",(0,0), (-1,-1), 4),
+            ("FONTSIZE",     (0,0), (-1,-1), 9),
+        ]
+
+        seen_spans = set()   # track cells that are part of a span
+
+        for ri, row in enumerate(tbl.rows):
+            row_data = []
+            ci = 0
+            for cell in row.cells:
+                # detect merged cells via tc element identity
+                tc = cell._tc
+                cell_key = id(tc)
+
+                if cell_key in seen_spans:
+                    row_data.append("")   # placeholder for spanned cell
+                    ci += 1
+                    continue
+
+                # check gridSpan (horizontal merge)
+                grid_span = 1
+                tc_pr = tc.find(qn("w:tcPr"))
+                if tc_pr is not None:
+                    gs_el = tc_pr.find(qn("w:gridSpan"))
+                    if gs_el is not None:
+                        grid_span = int(gs_el.get(qn("w:val"), 1))
+
+                # check vMerge (vertical merge)
+                v_merge = None
+                if tc_pr is not None:
+                    vm_el = tc_pr.find(qn("w:vMerge"))
+                    if vm_el is not None:
+                        v_merge = vm_el.get(qn("w:val"), "continue")
+
+                # build cell content
+                html = cell_runs_to_html(cell)
+                is_bold = cell_is_bold(cell)
+
+                cell_style = ParagraphStyle(
+                    f"cell_{ri}_{ci}",
+                    parent=base_styles["Normal"],
+                    fontSize=9, leading=13,
+                    fontName="Helvetica-Bold" if is_bold else "Helvetica",
+                )
+
+                # detect cell background color
+                try:
+                    shd = tc_pr.find(qn("w:shd")) if tc_pr is not None else None
+                    if shd is not None:
+                        fill = shd.get(qn("w:fill"), "")
+                        if fill and fill != "auto" and len(fill) == 6:
+                            bg = colors.HexColor(f"#{fill}")
+                            style_cmds.append(("BACKGROUND", (ci, ri), (ci + grid_span - 1, ri), bg))
+                            # white text on dark backgrounds
+                            r2, g2, b2 = int(fill[0:2],16), int(fill[2:4],16), int(fill[4:6],16)
+                            if (r2*299 + g2*587 + b2*114) / 1000 < 128:
+                                cell_style = ParagraphStyle(
+                                    f"cellW_{ri}_{ci}",
+                                    parent=base_styles["Normal"],
+                                    fontSize=9, leading=13,
+                                    fontName="Helvetica-Bold" if is_bold else "Helvetica",
+                                    textColor=colors.white,
+                                )
+                                style_cmds.append(("TEXTCOLOR", (ci, ri), (ci + grid_span - 1, ri), colors.white))
+                except Exception:
+                    pass
+
+                para = Paragraph(html, cell_style) if html.strip() else ""
+                row_data.append(para)
+
+                # register horizontal span
+                if grid_span > 1:
+                    style_cmds.append(("SPAN", (ci, ri), (ci + grid_span - 1, ri)))
+                    for extra in range(1, grid_span):
+                        seen_spans.add(id(row.cells[min(ci + extra, len(row.cells)-1)]._tc))
+
+                ci += grid_span
+
+            # pad row to n_cols
+            while len(row_data) < n_cols:
+                row_data.append("")
+            data.append(row_data[:n_cols])
+
         if not data:
             return None
-        col_count = max(len(r) for r in data)
-        col_w = (A4[0] - 5*cm) / col_count
 
-        ts = TableStyle([
-            ("BACKGROUND",  (0,0), (-1,0),  colors.HexColor("#2E4057")),
-            ("TEXTCOLOR",   (0,0), (-1,0),  colors.white),
-            ("FONTNAME",    (0,0), (-1,0),  "Helvetica-Bold"),
-            ("FONTSIZE",    (0,0), (-1,-1), 9),
-            ("ROWBACKGROUNDS", (0,1), (-1,-1),
-             [colors.HexColor("#F7F9FC"), colors.white]),
-            ("GRID",        (0,0), (-1,-1), 0.4, colors.HexColor("#D0D7E3")),
-            ("VALIGN",      (0,0), (-1,-1), "MIDDLE"),
-            ("LEFTPADDING", (0,0), (-1,-1), 6),
-            ("RIGHTPADDING",(0,0), (-1,-1), 6),
-            ("TOPPADDING",  (0,0), (-1,-1), 4),
-            ("BOTTOMPADDING",(0,0),(-1,-1), 4),
-        ])
-        t = Table(data, colWidths=[col_w]*col_count, repeatRows=1)
-        t.setStyle(ts)
+        t = Table(data, colWidths=col_widths, repeatRows=1,
+                  hAlign="LEFT", splitByRow=True)
+        t.setStyle(TableStyle(style_cmds))
         return t
 
-    # interleave paragraphs and tables in document order
+    # ── build story ────────────────────────────────────────────────────────
+
+    from docx.text.paragraph import Paragraph as DocxPara
+    from docx.table import Table as DocxTable
+
     block_items = list(_iter_block_items(doc))
+    story       = []
+
     for i, item in enumerate(block_items):
-        from docx.text.paragraph import Paragraph as DocxPara
-        from docx.table import Table as DocxTable
         if isinstance(item, DocxPara):
             el = process_paragraph(item)
         else:
             el = process_table(item)
+            if el:
+                story.append(Spacer(1, 6))
         if el is not None:
             story.append(el)
-        if i % 20 == 0:
+        if el and isinstance(item, DocxTable):
+            story.append(Spacer(1, 8))
+        if i % 10 == 0:
             log(f"Processing... ({i+1}/{len(block_items)})")
 
     if not story:
